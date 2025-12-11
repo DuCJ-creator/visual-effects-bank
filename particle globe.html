@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Three.js 炫酷粒子球體效果 V3 - 互動修正版</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000000; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+    // --- 優化後的參數設定 ---
+    const NUM_PARTICLES = 10000;        // 粒子數量，高密度
+    const SPHERE_RADIUS = 100;          
+    const MOUSE_REPEL_RADIUS = 60;      // **增加滑鼠影響半徑**，更容易觸發
+    const REPEL_STRENGTH = 1.5;         // 排斥力道
+    const DAMPING = 0.94;               // 阻尼，增加拖影感
+
+    // --- Three.js 核心變數 ---
+    let scene, camera, renderer;
+    let particles, positions, velocities, mousePos;
+
+    mousePos = new THREE.Vector2();
+
+    // 1. 初始化場景
+    function init() {
+        scene = new THREE.Scene();
+        
+        // 設定攝影機
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 200; 
+
+        // 渲染器
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // 創建粒子
+        createParticles();
+
+        // 監聽事件
+        window.addEventListener('mousemove', onMouseMove, false);
+        window.addEventListener('resize', onWindowResize, false);
+    }
+
+    // 2. 創建粒子系統
+    function createParticles() {
+        const geometry = new THREE.BufferGeometry();
+        
+        positions = new Float32Array(NUM_PARTICLES * 3); 
+        velocities = new Array(NUM_PARTICLES).fill(null).map(() => new THREE.Vector3(0, 0, 0)); 
+        // 修正：確保 velocities 陣列中的每個元素都是獨立的 Vector3 實例
+
+        for (let i = 0; i < NUM_PARTICLES; i++) {
+            const i3 = i * 3;
+
+            // 在球體表面上分佈粒子
+            const phi = Math.acos(Math.random() * 2 - 1); 
+            const theta = Math.random() * Math.PI * 2;   
+            
+            positions[i3] = SPHERE_RADIUS * Math.sin(phi) * Math.cos(theta);
+            positions[i3 + 1] = SPHERE_RADIUS * Math.sin(phi) * Math.sin(theta);
+            positions[i3 + 2] = SPHERE_RADIUS * Math.cos(phi);
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+        // 創建材質
+        const material = new THREE.PointsMaterial({
+            color: 0x00ffff, 
+            size: 0.5,       
+            sizeAttenuation: true, 
+            transparent: true,
+            opacity: 0.8
+        });
+
+        particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+    }
+
+    // 3. 處理滑鼠移動事件 (座標轉換)
+    function onMouseMove(event) {
+        // 標準化設備座標 (NDC)
+        mousePos.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mousePos.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    }
+
+    // 4. 粒子更新邏輯 (物理模擬 - 修正後的 3D 轉換)
+    function updateParticles() {
+        const p_positions = particles.geometry.attributes.position.array;
+        
+        // --- 修正後的 3D 轉換邏輯 ---
+        // 1. 創建一個 3D 向量，Z 軸設置為 0.5 (代表攝影機的距離)
+        let vector = new THREE.Vector3(mousePos.x, mousePos.y, 0.5);
+        
+        // 2. 將 2D 座標反投影到 3D 空間
+        vector.unproject(camera); 
+
+        // 3. 計算從攝影機到滑鼠方向射線與 Z=0 平面的交點
+        // 這是確保滑鼠影響點(mouse3D)位於場景中心，而不是被推到太遠或太近
+        const dir = vector.sub(camera.position).normalize();
+        const distance = -camera.position.z / dir.z; 
+        const mouse3D = camera.position.clone().add(dir.multiplyScalar(distance));
+        // --- 修正後的 3D 轉換邏輯結束 ---
+        
+        for (let i = 0; i < NUM_PARTICLES; i++) {
+            const i3 = i * 3;
+            const particlePos = new THREE.Vector3(p_positions[i3], p_positions[i3 + 1], p_positions[i3 + 2]);
+            let particleVel = velocities[i];
+            
+            // 計算排斥力
+            const direction = new THREE.Vector3().subVectors(particlePos, mouse3D);
+            const distance_interaction = direction.length();
+
+            if (distance_interaction < MOUSE_REPEL_RADIUS) {
+                
+                let strength = REPEL_STRENGTH * (MOUSE_REPEL_RADIUS - distance_interaction) / MOUSE_REPEL_RADIUS;
+                
+                // 施加排斥力
+                const force = direction.normalize().multiplyScalar(strength);
+                
+                particleVel.add(force);
+            }
+            
+            // 應用阻尼和更新位置
+            particleVel.multiplyScalar(DAMPING); 
+            particlePos.add(particleVel);          
+            
+            p_positions[i3] = particlePos.x;
+            p_positions[i3 + 1] = particlePos.y;
+            p_positions[i3 + 2] = particlePos.z;
+            velocities[i] = particleVel;
+        }
+
+        particles.geometry.attributes.position.needsUpdate = true;
+    }
+
+    // 5. 動畫迴圈
+    function animate() {
+        requestAnimationFrame(animate);
+
+        updateParticles(); 
+        
+        // 增加視覺動態感
+        particles.rotation.y += 0.001; 
+        
+        renderer.render(scene, camera);
+    }
+
+    // 6. 處理視窗大小調整
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // 啟動應用
+    init();
+    animate();
+
+</script>
+</body>
+</html>
