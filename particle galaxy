@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Three.js 浩瀚星系粒子效果</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000000; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+    // --- 參數設定 ---
+    const NUM_PARTICLES = 15000;        // 粒子數量增加，更密集
+    const GALAXY_RADIUS = 150;          // 星系分佈範圍
+    const MOUSE_REPEL_RADIUS = 60;      // 滑鼠影響半徑
+    const REPEL_STRENGTH = 2.0;         // **排斥力道增加**，反應更劇烈
+    const DAMPING = 0.95;               // 阻尼略增，防止粒子無限飛散
+    const ROTATION_SPEED = 0.0005;      // 星系自旋速度
+
+    // --- 顏色設定 ---
+    const BASE_COLOR = new THREE.Color(0x44aaff); // 星雲底色 (藍色調)
+    const MAX_PARTICLE_SIZE = 0.8;      // 粒子最大尺寸
+
+    // --- Three.js 核心變數 ---
+    let scene, camera, renderer;
+    let particles, positions, velocities, mousePos;
+
+    mousePos = new THREE.Vector2();
+
+    // 1. 初始化場景
+    function init() {
+        scene = new THREE.Scene();
+        
+        // 設定攝影機
+        camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 300; // 將攝影機推遠，增加空間感
+
+        // 渲染器
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // 創建粒子
+        createParticles();
+
+        // 監聽事件
+        window.addEventListener('mousemove', onMouseMove, false);
+        window.addEventListener('resize', onWindowResize, false);
+    }
+
+    // 2. 創建粒子系統 - 調整為隨機星雲分佈
+    function createParticles() {
+        const geometry = new THREE.BufferGeometry();
+        
+        positions = new Float32Array(NUM_PARTICLES * 3); 
+        velocities = new Array(NUM_PARTICLES).fill(null).map(() => new THREE.Vector3(0, 0, 0)); 
+        
+        const sizes = new Float32Array(NUM_PARTICLES); // 用於儲存每個粒子的大小
+
+        for (let i = 0; i < NUM_PARTICLES; i++) {
+            const i3 = i * 3;
+
+            // --- 創造隨機分散的星雲分佈 (增強浩瀚感) ---
+            
+            // 隨機在一個立方的範圍內分佈
+            let x = (Math.random() - 0.5) * GALAXY_RADIUS * 2.5; 
+            let y = (Math.random() - 0.5) * GALAXY_RADIUS * 2.5; 
+            let z = (Math.random() - 0.5) * GALAXY_RADIUS * 2.5;
+            
+            // 將粒子拉回中心，創造密度梯度 (模擬星系中心)
+            let distance = Math.sqrt(x * x + y * y + z * z);
+            if (distance > GALAXY_RADIUS) {
+                // 如果太遠，將其拉回
+                x *= (GALAXY_RADIUS / distance);
+                y *= (GALAXY_RADIUS / distance);
+                z *= (GALAXY_RADIUS / distance);
+            }
+            
+            positions[i3] = x;
+            positions[i3 + 1] = y;
+            positions[i3 + 2] = z;
+
+            // 隨機設置粒子大小，增加層次感
+            sizes[i] = Math.random() * MAX_PARTICLE_SIZE + 0.2;
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1)); // 將大小設為幾何屬性
+
+        // 創建材質 - 使用 ShaderMaterial 模擬發光效果 (更適合浩瀚感)
+        const material = new THREE.PointsMaterial({
+            color: BASE_COLOR, 
+            size: MAX_PARTICLE_SIZE,       
+            sizeAttenuation: true, 
+            transparent: true,
+            opacity: 1.0,
+            blending: THREE.AdditiveBlending // **疊加混色**：實現粒子發光、光暈的關鍵
+        });
+
+        particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+        
+        // 加入一個中心點光源，增強星系中心的感覺
+        const ambientLight = new THREE.AmbientLight(0x404040, 5); // 柔和環境光
+        scene.add(ambientLight);
+    }
+
+    // 3. 處理滑鼠移動事件 (座標轉換)
+    function onMouseMove(event) {
+        mousePos.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mousePos.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    }
+
+    // 4. 粒子更新邏輯 (物理模擬與旋轉)
+    function updateParticles() {
+        const p_positions = particles.geometry.attributes.position.array;
+        
+        // 修正後的 3D 轉換邏輯
+        let vector = new THREE.Vector3(mousePos.x, mousePos.y, 0.5);
+        vector.unproject(camera); 
+        const dir = vector.sub(camera.position).normalize();
+        const distance = -camera.position.z / dir.z; 
+        const mouse3D = camera.position.clone().add(dir.multiplyScalar(distance));
+        
+        for (let i = 0; i < NUM_PARTICLES; i++) {
+            const i3 = i * 3;
+            const particlePos = new THREE.Vector3(p_positions[i3], p_positions[i3 + 1], p_positions[i3 + 2]);
+            let particleVel = velocities[i];
+            
+            // --- 核心動態調整 ---
+            
+            // 1. **星系自旋 (模擬公轉)**
+            // 計算繞 Y 軸的旋轉力矩，讓粒子緩慢地圍繞中心旋轉
+            const center = new THREE.Vector3(0, 0, 0);
+            const rotationAxis = new THREE.Vector3(0, 1, 0); // Y 軸
+            const orbitVector = particlePos.clone().sub(center);
+            const rotationForce = new THREE.Vector3().crossVectors(rotationAxis, orbitVector).multiplyScalar(ROTATION_SPEED);
+            particleVel.add(rotationForce);
+
+            // 2. **滑鼠排斥力**
+            const direction = new THREE.Vector3().subVectors(particlePos, mouse3D);
+            const distance_interaction = direction.length();
+
+            if (distance_interaction < MOUSE_REPEL_RADIUS) {
+                let strength = REPEL_STRENGTH * (MOUSE_REPEL_RADIUS - distance_interaction) / MOUSE_REPEL_RADIUS;
+                const force = direction.normalize().multiplyScalar(strength);
+                particleVel.add(force);
+            }
+            
+            // 3. **引力回彈 (防止粒子飛散)**
+            // 增加一個微弱的引力，將粒子拉回中心，維持結構
+            const gravity = center.clone().sub(particlePos).normalize().multiplyScalar(0.005);
+            particleVel.add(gravity);
+            
+            // 4. 應用阻尼和更新位置
+            particleVel.multiplyScalar(DAMPING); 
+            particlePos.add(particleVel);          
+            
+            p_positions[i3] = particlePos.x;
+            p_positions[i3 + 1] = particlePos.y;
+            p_positions[i3 + 2] = particlePos.z;
+            velocities[i] = particleVel;
+        }
+
+        particles.geometry.attributes.position.needsUpdate = true;
+    }
+
+    // 5. 動畫迴圈
+    function animate() {
+        requestAnimationFrame(animate);
+
+        updateParticles(); 
+        
+        // 讓整個粒子系統在 Z 軸輕微擺動，增加立體感
+        particles.rotation.z += 0.0005; 
+        
+        renderer.render(scene, camera);
+    }
+
+    // 6. 處理視窗大小調整
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    // 啟動應用
+    init();
+    animate();
+
+</script>
+</body>
+</html>
